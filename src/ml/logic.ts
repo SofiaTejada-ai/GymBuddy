@@ -1,8 +1,6 @@
 import { indexKeypoints, kneeAngle, elbowAngle, torsoTilt, neckAngle,
          pointDeviationFromLine, smooth, PoseMap, KP } from "./features";
-import { indexKeypoints, kneeAngle, elbowAngle, torsoTilt, neckAngle,
-         pointDeviationFromLine, smooth, PoseMap, KP,
-         stanceWidthRatio, toeOutAngles } from "./features";
+import { THRESH } from "./constants";
 
 export type FrameOut = {
   t: number,
@@ -16,8 +14,6 @@ export type EventOut =
   | { kind: "sec", index: number, green: boolean, cue?: string };
 
 type Exercise = "squat"|"pushup"|"plank"|"deadbug"|"wallsit";
-
-import { THRESH } from "./constants";
 
 type State = {
   started: boolean,
@@ -46,11 +42,11 @@ const state: Record<Exercise, State> = {
   wallsit: { started:false, t0:0, repIndex:0, cueHold:null },
 };
 
+// sticky cue: hold any cue for at least THRESH.cueHoldMs
 function setCue(st: State, text: string) {
-  // debounce for about two frames at 30 fps
   const now = performance.now();
   if (!st.cueHold || st.cueHold.text !== text || now > st.cueHold.until) {
-    st.cueHold = { text, until: now + 10000 };
+    st.cueHold = { text, until: now + (THRESH.cueHoldMs ?? 700) };
   }
   return st.cueHold.text;
 }
@@ -67,6 +63,13 @@ export function evaluateFrame(
   let event: EventOut | undefined;
 
   if (!pose) return { frame, event };
+
+  // drop frames with all very low-confidence keypoints (reduces flicker)
+  const pts = pose.keypoints || [];
+  if (pts.length && pts.every(k => (k.score ?? 0) < (THRESH.minKPScore ?? 0.35))) {
+    frame.cue = setCue(st, "Hold still");
+    return { frame, event };
+  }
 
   const m: PoseMap = indexKeypoints(pose);
 
@@ -92,7 +95,7 @@ export function evaluateFrame(
   return { frame, event };
 }
 
-// 1. Squat
+// 1) SQUAT — gated depth judging + hysteresis on phase
 function squatLogic(m: PoseMap, st: State, frame: FrameOut) {
   const knee = smooth("sq_knee", kneeAngle(m));
   const torso = smooth("sq_torso", torsoTilt(m));
@@ -101,7 +104,7 @@ function squatLogic(m: PoseMap, st: State, frame: FrameOut) {
   if (st.hipStart === undefined && isFinite(hipY)) st.hipStart = hipY;
 
   const movedDown = st.hipStart !== undefined && hipY > st.hipStart * (1 + THRESH.repDownFrac);
-  const backNearTop = st.hipStart !== undefined && hipY <= st.hipStart * (1 + THRESH.repTopFrac);
+  const nearTop   = st.hipStart !== undefined && hipY <= st.hipStart * (1 + THRESH.repTopFrac);
 
   const depthGreen = knee >= THRESH.squatDepthMin && knee <= THRESH.squatDepthMax;
   const torsoOK = Math.abs(torso) <= THRESH.squatTorsoChangeMax;
@@ -112,29 +115,45 @@ function squatLogic(m: PoseMap, st: State, frame: FrameOut) {
   const kneeInside = kneeX < ankleX - THRESH.kneeCaveFrac * hipAnkleDist;
   const kneesOK = !kneeInside;
 
-  // cue
-  if (!depthGreen) frame.cue = setCue(st, knee > THRESH.squatDepthMax ? "Go a little deeper" : "Depth very deep, rise slightly");
-  else if (!kneesOK) frame.cue = setCue(st, "Push knees out");
-  else if (!torsoOK) frame.cue = setCue(st, "Keep chest up");
-  else frame.cue = "";
-
-  // rep state
+  // phase machine
   if (st.phase === undefined) st.phase = "idle";
-  if (st.phase === "idle" && movedDown) st.phase = "down";
-  if (st.phase === "down" && depthGreen && !movedDown) st.phase = "up";
-  if (st.phase === "up" && backNearTop) {
+
+  let showDepth = false;
+
+  if (st.phase === "idle" && movedDown) {
+    st.phase = "down";
+  }
+  if (st.phase === "down") {
+    showDepth = true;
+    // once you reached depth and start rising, go to up
+    if (!movedDown && depthGreen) st.phase = "up";
+  }
+  if (st.phase === "up" && nearTop) {
     st.repIndex += 1;
     const green = depthGreen && kneesOK && torsoOK;
-    const ev: EventOut = { kind: "rep", index: st.repIndex, green, cue: green ? undefined : frame.cue };
+    const ev: EventOut = { kind: "rep", index: st.repIndex, green, cue: green ? undefined : st.cueHold?.text };
     st.phase = "idle";
+    frame.signals.hipHeight = st.hipStart ? hipY - st.hipStart : undefined;
     return { frame, event: ev };
+  }
+
+  // cues
+  if (showDepth) {
+    if (!depthGreen) frame.cue = setCue(st, knee > THRESH.squatDepthMax ? "Go a little deeper" : "Depth very deep, rise slightly");
+    else if (!kneesOK) frame.cue = setCue(st, "Push knees out");
+    else if (!torsoOK) frame.cue = setCue(st, "Keep chest up");
+    else frame.cue = setCue(st, "");
+  } else {
+    // idle/up: don’t nag about depth; only alignment
+    if (!kneesOK) frame.cue = setCue(st, "Push knees out");
+    else frame.cue = setCue(st, "");
   }
 
   frame.signals.hipHeight = st.hipStart ? hipY - st.hipStart : undefined;
   return { frame, event: undefined };
 }
 
-// 2. Pushup
+// 2) PUSHUP — unchanged except thresholds from THRESH
 function pushupLogic(m: PoseMap, st: State, frame: FrameOut) {
   const elbow = smooth("pu_elbow", elbowAngle(m));
   const lineDev = smooth("pu_line", lineDeviation(m));
@@ -144,10 +163,10 @@ function pushupLogic(m: PoseMap, st: State, frame: FrameOut) {
   const lineOK = lineDev <= THRESH.lineDevMax;
   const neckOK = neck <= THRESH.neckMax;
 
-  if (!depthGreen) frame.cue = setCue(st, "Go a bit lower");
+  if (!depthGreen) frame.cue = setCue(st, "Go a little deeper");
   else if (!lineOK) frame.cue = setCue(st, "Keep a straight line");
   else if (!neckOK) frame.cue = setCue(st, "Tuck chin slightly");
-  else frame.cue = "";
+  else frame.cue = setCue(st, "");
 
   if (st.pPhase === undefined) st.pPhase = "idle";
   if (st.pPhase === "idle" && !depthGreen) st.pPhase = "up";
@@ -155,7 +174,7 @@ function pushupLogic(m: PoseMap, st: State, frame: FrameOut) {
   if (st.pPhase === "down" && !depthGreen) {
     st.repIndex += 1;
     const green = lineOK && neckOK;
-    const ev: EventOut = { kind: "rep", index: st.repIndex, green, cue: green ? undefined : frame.cue };
+    const ev: EventOut = { kind: "rep", index: st.repIndex, green, cue: green ? undefined : st.cueHold?.text };
     st.pPhase = "idle";
     frame.signals.lineDeviation = lineDev;
     return { frame, event: ev };
@@ -167,10 +186,10 @@ function pushupLogic(m: PoseMap, st: State, frame: FrameOut) {
 
 function lineDeviation(m: PoseMap) {
   const s = m.shoulder, a = m.ankle, h = m.hip;
-  return pointDeviationFromLine(s, a, h); // deviation at the hip from shoulder to ankle line
+  return pointDeviationFromLine(s, a, h);
 }
 
-// 3. Plank
+// 3) PLANK — second-based scoring (unchanged)
 function plankLogic(m: PoseMap, st: State, frame: FrameOut) {
   const lineDev = smooth("pl_line", lineDeviation(m));
   const neck = smooth("pl_neck", neckAngle(m));
@@ -188,13 +207,12 @@ function plankLogic(m: PoseMap, st: State, frame: FrameOut) {
       const ev: EventOut = { kind: "sec", index: st.secBox.secs, green: true };
       st.secBox.bucket = bucket; st.secBox.good = 0; st.secBox.total = 0;
       frame.signals.lineDeviation = lineDev;
-      // set cue for next second based on which failed
       if (!ok) {
         if (lineDev > THRESH.lineDevMax) frame.cue = setCue(st, m.hip && m.shoulder && m.hip.y > m.shoulder.y ? "Lift hips slightly" : "Lower hips slightly");
         else if (!shouldersOverWrists) frame.cue = setCue(st, "Bring shoulders over wrists");
         else if (neck > THRESH.neckMax) frame.cue = setCue(st, "Relax neck");
-        else frame.cue = "";
-      } else frame.cue = "";
+        else frame.cue = setCue(st, "");
+      } else frame.cue = setCue(st, "");
       return { frame, event: ev };
     }
     st.secBox.bucket = bucket; st.secBox.good = 0; st.secBox.total = 0;
@@ -207,7 +225,7 @@ function plankLogic(m: PoseMap, st: State, frame: FrameOut) {
     if (lineDev > THRESH.lineDevMax) frame.cue = setCue(st, m.hip && m.shoulder && m.hip.y > m.shoulder.y ? "Lift hips slightly" : "Lower hips slightly");
     else if (!shouldersOverWrists) frame.cue = setCue(st, "Bring shoulders over wrists");
     else if (neck > THRESH.neckMax) frame.cue = setCue(st, "Relax neck");
-  } else frame.cue = "";
+  } else frame.cue = setCue(st, "");
   return { frame, event: undefined };
 }
 
@@ -217,13 +235,11 @@ function wristsUnderShoulders(m: PoseMap) {
   return dx < 40; // pixels, tune with your video
 }
 
-// 4. Dead bug
+// 4) DEADBUG — unchanged except lenient THRESH values
 function deadbugLogic(m: PoseMap, st: State, frame: FrameOut) {
-  // back contact proxy: horizontal offset hip to shoulder
   const back = smooth("db_back", Math.abs((m.hip?.x ?? 0) - (m.shoulder?.x ?? 0)));
   const backOK = back < THRESH.deadbugBackContactMaxPx;
 
-  // limb speed
   const p = m.wrist || m.ankle || m.knee;
   const prev = st.dbPrev || p;
   const speed = p ? Math.hypot(p.x - (prev?.x ?? p.x), p.y - (prev?.y ?? p.y)) : 0;
@@ -232,9 +248,8 @@ function deadbugLogic(m: PoseMap, st: State, frame: FrameOut) {
 
   if (!backOK) frame.cue = setCue(st, "Press lower back into floor");
   else if (!slowEnough) frame.cue = setCue(st, "Slower reach");
-  else frame.cue = "";
+  else frame.cue = setCue(st, "");
 
-  // alternating reps on wrist to hip distance wave
   const d = p && m.hip ? Math.hypot(p.x - m.hip.x, p.y - m.hip.y) : 0;
   const dSm = smooth("db_wave", d);
   if (!st.dbDir && dSm > (st.dbLastD ?? dSm)) st.dbDir = "out";
@@ -255,7 +270,7 @@ function deadbugLogic(m: PoseMap, st: State, frame: FrameOut) {
   return { frame, event: undefined };
 }
 
-// 5. Wall sit
+// 5) WALL SIT — unchanged using lenient tilt limits
 function wallsitLogic(m: PoseMap, st: State, frame: FrameOut) {
   const knee = smooth("ws_knee", kneeAngle(m));
   const shinTilt = smooth("ws_shin", shinAngle(m));
@@ -269,9 +284,8 @@ function wallsitLogic(m: PoseMap, st: State, frame: FrameOut) {
   if (!depthOK) frame.cue = setCue(st, knee > THRESH.squatDepthMax ? "Slide down a little" : "Rise slightly");
   else if (!shinOK) frame.cue = setCue(st, "Keep feet under knees");
   else if (!backOK) frame.cue = setCue(st, "Keep back against the wall");
-  else frame.cue = "";
+  else frame.cue = setCue(st, "");
 
-  // per second accounting
   const bucket = Math.floor(performance.now() / 1000);
   if (!st.wsSecBox) st.wsSecBox = { bucket, good: 0, total: 0, secs: 0 };
   if (st.wsSecBox.bucket !== bucket) {
@@ -299,10 +313,6 @@ function shinAngle(m: PoseMap) {
 
 function backVerticality(m: PoseMap) {
   if (!m.hip || !m.shoulder) return 0;
-  // horizontal offset maps to tilt
   const dx = Math.abs(m.hip.x - m.shoulder.x);
   return dx * 0.2; // scale to degrees, tune on your video
-}
-export function resetExercise(ex: "squat"|"pushup"|"plank"|"deadbug"|"wallsit") {
-  state[ex] = { started:false, t0:0, repIndex:0, cueHold:null };
 }

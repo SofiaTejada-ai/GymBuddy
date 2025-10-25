@@ -5,3 +5,8 @@ dist/
 client/node_modules/
 client/dist/
 
+node_modules/
+dist/
+.cache/
+.DS_Store
+*.log

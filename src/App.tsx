@@ -7,14 +7,23 @@ type Exercise = "squat" | "pushup" | "plank" | "deadbug" | "wallsit";
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const lastCueRef = useRef("");
+  const lastSpokenRef = useRef(0);
+
   const [exercise, setExercise] = useState<Exercise>("squat");
   const [useDemo, setUseDemo] = useState(true);
   const [count, setCount] = useState(0);
   const [cue, setCue] = useState("");
   const [calibUntil, setCalibUntil] = useState(0);
+
+  // calm border with hysteresis
+  const [okAvg, setOkAvg] = useState(1);
   const [ok, setOk] = useState(false);
+  const okFlipUp = 0.65;
+  const okFlipDown = 0.35;
+
   const [mute, setMute] = useState(false);
-  const lastCueRef = useRef("");
 
   // load webcam or the right demo video
   useEffect(() => {
@@ -62,7 +71,7 @@ export default function App() {
     v.onresize = fit;
   }, [useDemo, exercise]);
 
-  // main loop
+  // main loop (no per-frame speaking)
   useEffect(() => {
     let raf = 0;
     const loop = async () => {
@@ -72,23 +81,17 @@ export default function App() {
         const { frame, event } = evaluateFrame(pose as any, exercise);
         drawOverlay(pose, canvasRef.current, frame);
 
-        // green or red live indicator
+        // hysteresis on green/red
         const goodNow = !(frame.cue && frame.cue.length > 0);
-        setOk(goodNow);
+        const next = 0.85 * okAvg + 0.15 * (goodNow ? 1 : 0);
+        setOkAvg(next);
+        setOk(ok ? next > okFlipDown : next > okFlipUp);
 
-        // voice tips
-        const newCue = performance.now() > calibUntil ? (frame.cue || "") : "Calibrating…";
-        if (newCue !== lastCueRef.current) {
-          if (newCue && newCue !== "Calibrating…") speak(newCue, mute);
-          if (!newCue && lastCueRef.current) speak("Good form", mute);
-          lastCueRef.current = newCue;
-        }
+        const newCue =
+          performance.now() > calibUntil ? frame.cue || "" : "Calibrating…";
+        if (newCue !== lastCueRef.current) lastCueRef.current = newCue;
 
-        if (event) {
-          if (event.kind === "rep") speak(event.green ? "Good rep" : "Fix your form", mute);
-          if (event.kind === "sec") speak("Good hold", mute);
-          setCount(event.index);
-        }
+        if (event) setCount(event.index);
 
         if (performance.now() > calibUntil) setCue(frame.cue || "");
         else setCue("Calibrating…");
@@ -97,7 +100,23 @@ export default function App() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [exercise, calibUntil, mute]);
+  }, [exercise, calibUntil, ok, okAvg]);
+
+  // speak every 4 seconds based on the latest cue (very light)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const msg =
+        lastCueRef.current && lastCueRef.current !== "Calibrating…"
+          ? lastCueRef.current
+          : "Looking good";
+      const now = performance.now();
+      if (now - lastSpokenRef.current > 3500) {
+        speak(msg, mute);
+        lastSpokenRef.current = now;
+      }
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [mute]);
 
   return (
     <div style={{ padding: 16 }}>
@@ -111,6 +130,7 @@ export default function App() {
             setCue("Calibrating…");
             setCalibUntil(performance.now() + 2000);
             lastCueRef.current = "Calibrating…";
+            setOkAvg(1);
           }}
         >
           <option value="squat">Squat</option>
@@ -162,7 +182,7 @@ function speak(text: string, mute: boolean) {
   try {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.1;
+    u.rate = 1.05;
     window.speechSynthesis.speak(u);
   } catch {}
 }
@@ -174,7 +194,6 @@ function drawOverlay(pose: any, canvas: HTMLCanvasElement | null, frame: any) {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // skeleton dots
   if (pose?.keypoints) {
     ctx.lineWidth = 2;
     (pose.keypoints || []).forEach((k: any) => {
@@ -190,7 +209,6 @@ function drawOverlay(pose: any, canvas: HTMLCanvasElement | null, frame: any) {
     ctx.fillText("no pose yet…", 8, 18);
   }
 
-  // debug readouts
   const a = frame?.angles || {};
   const s = frame?.signals || {};
   const lines = [
