@@ -6,26 +6,15 @@ let detector: posedetection.PoseDetector | null = null;
 
 export async function getDetector() {
   if (detector) return detector;
-
   await tf.setBackend("webgl");
   await tf.ready();
-
-  // Use a higher-quality model and temporal smoothing
   detector = await posedetection.createDetector(
-  posedetection.SupportedModels.BlazePose,
-  {
-    runtime: "tfjs",
-    modelType: "full",      // more stable than "lite"
-    enableSmoothing: true,  // temporal smoothing
-  } as posedetection.BlazePoseTfjsModelConfig
-);
-
-
-  // Tiny warmup to reduce first-frame flakiness
-  const dummy = tf.zeros([1, 256, 256, 3]);
-  await tf.nextFrame();
-  dummy.dispose();
-
+    posedetection.SupportedModels.MoveNet,
+    {
+      modelType: "SinglePose.Thunder", // steadier than Lightning
+      enableSmoothing: true,
+    } as posedetection.MoveNetModelConfig
+  );
   return detector;
 }
 
