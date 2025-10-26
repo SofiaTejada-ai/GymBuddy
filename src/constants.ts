@@ -6,9 +6,9 @@ export const THRESH = {
   cueHoldMs: 600,
 
   // --- SQUAT (relative-only) ---
-  repDownFrac: 0.06,   // ≥6% drop from your standing baseline = “in squat”
-  repTopFrac: 0.06,    // within 6% of baseline = “at top”
-  minRepMs: 500,       // debounce reps
+  repDownFrac: 0.06,
+  repTopFrac: 0.06,
+  minRepMs: 500,
   squatTorsoChangeMax: 50,
 
   // --- Global posture hints (kept simple)
@@ -16,13 +16,21 @@ export const THRESH = {
   neckMax: 30,
 
   // --- PLANK (side-view gating) ---
-   plankLineDevMax: 28,
+  plankLineDevMax: 28,
   plankNeckMax: 45,
   plankHorizontalMaxDeg: 40,
   plankMinShoulderAnkleDxPx: 60,
-  supportUnderShoulderPx: 150,       // wrist/elbow roughly under shoulder (x distance)
+  supportUnderShoulderPx: 150, // wrist/elbow roughly under shoulder (x distance)
 
-  // --- wallsit / deadbug (permissive)
+  // --- PUSH-UP (same idea as plank; tuned a bit stricter) ---
+  // --- PUSH-UP (more forgiving) ---
+   pushupLineDevMax: 30,            // was 22
+   pushupNeckMax: 45,               // was 35
+   pushupHorizontalMaxDeg: 38,      // was 25
+   pushupSupportUnderShoulderPx: 110, // was 110
+
+
+      // --- wallsit / deadbug (permissive)
   wallsitShinTiltMax: 22,
   wallsitBackTiltMax: 22,
   deadbugBackContactMaxPx: 80,
