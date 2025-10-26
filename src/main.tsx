@@ -1,9 +1,11 @@
+// src/main.tsx
 import React from "react";
 import ReactDOM from "react-dom/client";
-import GymBuddy from "./components/GymBuddy";
-import "../index.css"; // <-- important
+import "./index.css";
+import App from "./App";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <GymBuddy />
+    <App />
   </React.StrictMode>
 );

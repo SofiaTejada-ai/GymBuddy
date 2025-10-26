@@ -1,312 +1,248 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Camera, CheckCircle, XCircle, Activity, Info } from 'lucide-react';
+// src/App.js  — minimal, no Tailwind, no icon libs
+import React, { useEffect, useRef, useState } from "react";
 
-export default function GymBuddy() {
+export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
-  const [formStatus, setFormStatus] = useState('neutral'); // 'good', 'bad', 'neutral'
-  const [selectedExercise, setSelectedExercise] = useState('squat');
+  const [useDemo, setUseDemo] = useState(true);
+  const [exercise, setExercise] = useState("squat");
+  const [formStatus, setFormStatus] = useState("neutral"); // 'good' | 'bad' | 'neutral'
   const [repCount, setRepCount] = useState(0);
-  const [feedback, setFeedback] = useState('');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  
+  const [feedback, setFeedback] = useState("");
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const analysisIntervalRef = useRef(null);
+  const intervalRef = useRef(null);
 
-  const exercises = [
-    { id: 'squat', name: 'Squats', description: 'Keep back straight, knees over toes' },
-    { id: 'pushup', name: 'Push-ups', description: 'Straight line from head to heels' },
-    { id: 'plank', name: 'Plank', description: 'Core engaged, hips level' },
-    { id: 'lunge', name: 'Lunges', description: 'Front knee at 90 degrees' },
-  ];
+  const demoMap = {
+    squat:   "/demo/squat_good_side.mp4",
+    pushup:  "/demo/pushup_good_side.mp4",
+    plank:   "/demo/plank_good_side.mp4",
+    deadbug: "/demo/deadbug_good_side.mp4",
+    wallsit: "/demo/wallsit_good_side.mp4",
+  };
+
+  // --- helpers ---
+  const startDemo = async () => {
+    stopAll();
+    const v = videoRef.current;
+    if (!v) return;
+    v.srcObject = null;
+    v.src = demoMap[exercise];
+    v.loop = true;
+    v.muted = true;
+    v.onloadedmetadata = () => {
+      v.play().catch(() => {});
+    };
+    setIsStreaming(true);
+    startAnalysis();
+  };
 
   const startWebcam = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'user', width: 640, height: 480 } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: 640, height: 480 },
+        audio: false,
       });
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        setIsStreaming(true);
-        startAIAnalysis();
-      }
-    } catch (err) {
-      console.error('Error accessing webcam:', err);
-      setFeedback('Unable to access camera. Please check permissions.');
+      streamRef.current = stream;
+      const v = videoRef.current;
+      if (!v) return;
+      v.srcObject = stream;
+      v.onloadedmetadata = () => v.play().catch(() => {});
+      setIsStreaming(true);
+      startAnalysis();
+    } catch (e) {
+      console.error(e);
+      setFeedback("Could not access camera. Check permissions.");
     }
   };
 
-  const stopWebcam = () => {
+  const stopAll = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+    const v = videoRef.current;
+    if (v) {
+      v.pause();
+      v.srcObject = null;
+      v.src = "";
     }
     setIsStreaming(false);
-    stopAIAnalysis();
+    setFormStatus("neutral");
   };
 
+  const start = async () => {
+    setRepCount(0);
+    setFormStatus("neutral");
+    setFeedback("Analyzing…");
+    if (useDemo) await startDemo();
+    else await startWebcam();
+  };
+
+  // Capture a frame as base64 (for plugging in your model later)
   const captureFrame = () => {
-    if (videoRef.current && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
-      
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
-      
-      // Convert to base64 for AI API
-      return canvas.toDataURL('image/jpeg', 0.8);
-    }
-    return null;
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c || !v.videoWidth || !v.videoHeight) return null;
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(v, 0, 0);
+    return c.toDataURL("image/jpeg", 0.85);
   };
 
-  const analyzeFormWithAI = async (imageData) => {
-    // ==================================================================
-    // AI API INTEGRATION POINT
-    // ==================================================================
-    // Replace this function with your actual AI API call
-    // 
-    // Example structure for pose detection API:
-    /*
-    try {
-      const response = await fetch('YOUR_AI_API_ENDPOINT', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer YOUR_API_KEY'
-        },
-        body: JSON.stringify({
-          image: imageData,
-          exercise_type: selectedExercise,
-          // Add other parameters your AI model needs
-        })
-      });
-      
-      const result = await response.json();
-      
-      // Process AI response
-      return {
-        formCorrect: result.form_score > 0.8,
-        confidence: result.confidence,
-        feedback: result.feedback_message,
-        repDetected: result.rep_completed,
-        keypoints: result.pose_keypoints // For visualization
-      };
-    } catch (error) {
-      console.error('AI API Error:', error);
-      return null;
-    }
-    */
-    
-    // DEMO MODE: Simulated AI response
-    // Remove this when integrating real AI
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const random = Math.random();
-        const isGoodForm = random > 0.3;
-        
-        resolve({
-          formCorrect: isGoodForm,
-          confidence: 0.85 + Math.random() * 0.15,
-          feedback: isGoodForm 
-            ? 'Great form! Keep it up!' 
-            : 'Adjust your posture slightly',
-          repDetected: random > 0.9,
-        });
-      }, 100);
-    });
+  // Fake “AI” to show the UI behavior; replace with your model call
+  const analyzeForm = async (imageBase64) => {
+    // simulate a quick result
+    const r = Math.random();
+    const good = r > 0.35; // ~65% good
+    return {
+      formCorrect: good,
+      repDetected: r > 0.9,
+      feedback: good ? "Great form — keep it up!" : defaultTip(exercise),
+    };
   };
 
-  const startAIAnalysis = () => {
-    setIsAnalyzing(true);
-    
-    // Analyze frames every 500ms
-    analysisIntervalRef.current = setInterval(async () => {
-      const frameData = captureFrame();
-      if (frameData) {
-        const analysis = await analyzeFormWithAI(frameData);
-        
-        if (analysis) {
-          setFormStatus(analysis.formCorrect ? 'good' : 'bad');
-          setFeedback(analysis.feedback);
-          
-          if (analysis.repDetected) {
-            setRepCount(prev => prev + 1);
-          }
-        }
-      }
+  const defaultTip = (ex) => {
+    switch (ex) {
+      case "squat": return "Push knees out; chest tall.";
+      case "pushup": return "Straight line head→heels.";
+      case "plank": return "Shoulders over wrists; hips level.";
+      case "deadbug": return "Press lower back into floor.";
+      case "wallsit": return "Slide down; knees near 90°.";
+      default: return "Adjust posture slightly.";
+    }
+  };
+
+  const startAnalysis = () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(async () => {
+      const frame = captureFrame();
+      if (!frame) return;
+      const res = await analyzeForm(frame);
+      setFormStatus(res.formCorrect ? "good" : "bad");
+      setFeedback(res.feedback || "");
+      if (res.repDetected) setRepCount(prev => prev + 1);
     }, 500);
   };
 
-  const stopAIAnalysis = () => {
-    setIsAnalyzing(false);
-    if (analysisIntervalRef.current) {
-      clearInterval(analysisIntervalRef.current);
-      analysisIntervalRef.current = null;
-    }
-  };
-
+  // restart demo autoplay when exercise changes while streaming in demo mode
   useEffect(() => {
-    return () => {
-      stopWebcam();
-    };
-  }, []);
+    if (isStreaming && useDemo) startDemo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exercise, useDemo]);
 
-  const getBorderColor = () => {
-    switch (formStatus) {
-      case 'good': return 'border-green-500';
-      case 'bad': return 'border-red-500';
-      default: return 'border-gray-300';
-    }
-  };
+  useEffect(() => () => stopAll(), []);
 
-  const getStatusColor = () => {
-    switch (formStatus) {
-      case 'good': return 'bg-green-500';
-      case 'bad': return 'bg-red-500';
-      default: return 'bg-gray-400';
-    }
-  };
+  const borderColor =
+    formStatus === "good" ? "4px solid #10b981" :
+    formStatus === "bad"  ? "4px solid #ef4444" :
+                            "4px solid #d1d5db";
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center gap-3 mb-2">
-            <Activity className="w-10 h-10 text-indigo-600" />
-            <h1 className="text-4xl font-bold text-gray-800">GymBuddy</h1>
-          </div>
-          <p className="text-gray-600">AI-Powered Exercise Form Checker</p>
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#eff6ff,#eef2ff)",padding:24,fontFamily:"system-ui, -apple-system, Segoe UI, Roboto, sans-serif"}}>
+      <div style={{maxWidth:960,margin:"0 auto"}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <h1 style={{fontSize:36,margin:0,color:"#1f2937"}}>GymBuddy</h1>
+          <div style={{color:"#4b5563"}}>Demo video toggle + green/red border + exercise selector</div>
         </div>
 
-        {/* Main Content */}
-        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
-          {/* Exercise Selection */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Select Exercise
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              {exercises.map((ex) => (
-                <button
-                  key={ex.id}
-                  onClick={() => setSelectedExercise(ex.id)}
-                  disabled={isStreaming}
-                  className={`p-4 rounded-lg border-2 transition-all ${
-                    selectedExercise === ex.id
-                      ? 'border-indigo-500 bg-indigo-50'
-                      : 'border-gray-200 hover:border-indigo-300'
-                  } ${isStreaming ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  <div className="font-semibold text-gray-800">{ex.name}</div>
-                  <div className="text-xs text-gray-500 mt-1">{ex.description}</div>
-                </button>
-              ))}
-            </div>
-          </div>
+        {/* Controls */}
+        <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+          <label>
+            Exercise:&nbsp;
+            <select value={exercise} onChange={e => setExercise(e.target.value)}>
+              <option value="squat">Squat</option>
+              <option value="pushup">Push-up</option>
+              <option value="plank">Plank</option>
+              <option value="deadbug">Dead bug</option>
+              <option value="wallsit">Wall sit</option>
+            </select>
+          </label>
 
-          {/* Video Feed */}
-          <div className="relative">
-            <div className={`relative rounded-xl overflow-hidden border-4 ${getBorderColor()} transition-colors duration-300 bg-gray-900`}>
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-auto"
-                style={{ maxHeight: '480px', transform: 'scaleX(-1)' }}
-              />
-              
-              {!isStreaming && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                  <Camera className="w-24 h-24 text-gray-600" />
-                </div>
-              )}
+          <label style={{display:"flex",alignItems:"center",gap:6}}>
+            <input
+              type="checkbox"
+              checked={useDemo}
+              onChange={e => setUseDemo(e.target.checked)}
+              disabled={isStreaming}
+            />
+            Use demo video
+          </label>
 
-              {/* Status Indicator */}
-              {isStreaming && (
-                <div className="absolute top-4 right-4 flex items-center gap-2 bg-black bg-opacity-60 px-4 py-2 rounded-full">
-                  <div className={`w-3 h-3 rounded-full ${getStatusColor()} animate-pulse`} />
-                  <span className="text-white text-sm font-medium">
-                    {formStatus === 'good' ? 'Good Form' : formStatus === 'bad' ? 'Adjust Form' : 'Analyzing...'}
-                  </span>
-                </div>
-              )}
+          {!isStreaming ? (
+            <button onClick={start} style={btn("#4f46e5")}>Start</button>
+          ) : (
+            <button onClick={stopAll} style={btn("#ef4444")}>Stop</button>
+          )}
 
-              {/* Rep Counter */}
-              {isStreaming && (
-                <div className="absolute top-4 left-4 bg-black bg-opacity-60 px-4 py-2 rounded-full">
-                  <div className="text-white text-sm">
-                    Reps: <span className="font-bold text-lg">{repCount}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Hidden canvas for frame capture */}
-            <canvas ref={canvasRef} className="hidden" />
-          </div>
-
-          {/* Controls */}
-          <div className="mt-6 flex gap-4">
-            <button
-              onClick={isStreaming ? stopWebcam : startWebcam}
-              className={`flex-1 py-3 px-6 rounded-lg font-semibold text-white transition-all ${
-                isStreaming
-                  ? 'bg-red-500 hover:bg-red-600'
-                  : 'bg-indigo-600 hover:bg-indigo-700'
-              }`}
-            >
-              {isStreaming ? 'Stop Session' : 'Start Session'}
-            </button>
-            
-            {isStreaming && (
-              <button
-                onClick={() => setRepCount(0)}
-                className="px-6 py-3 rounded-lg font-semibold text-gray-700 bg-gray-200 hover:bg-gray-300 transition-all"
-              >
-                Reset Reps
-              </button>
-            )}
-          </div>
-
-          {/* Feedback */}
-          {feedback && isStreaming && (
-            <div className={`mt-4 p-4 rounded-lg flex items-start gap-3 ${
-              formStatus === 'good' ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
-            }`}>
-              {formStatus === 'good' ? (
-                <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-              ) : (
-                <XCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              )}
-              <p className={`${formStatus === 'good' ? 'text-green-800' : 'text-red-800'}`}>
-                {feedback}
-              </p>
-            </div>
+          {isStreaming && (
+            <button onClick={() => setRepCount(0)} style={btn("#6b7280")}>Reset Reps</button>
           )}
         </div>
 
-        {/* Info Box */}
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <div className="flex items-start gap-3">
-            <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-            <div className="text-sm text-blue-800">
-              <p className="font-semibold mb-1">AI Integration Ready</p>
-              <p>Check the <code className="bg-blue-100 px-1 rounded">analyzeFormWithAI</code> function in the code to connect your pose detection AI API. The app captures frames and sends them for analysis every 500ms.</p>
-            </div>
+        {/* Video box */}
+        <div style={{position:"relative",background:"#111827",borderRadius:12,overflow:"hidden"}}>
+          <div style={{position:"relative",border:borderColor}}>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{display:"block",width:"100%",maxHeight:480,transform:"scaleX(-1)"}}
+            />
           </div>
+
+          {/* Status Badges */}
+          {isStreaming && (
+            <>
+              <div style={{
+                position:"absolute",top:12,right:12,background:"rgba(0,0,0,0.6)",
+                color:"#fff",padding:"8px 12px",borderRadius:999,display:"flex",
+                alignItems:"center",gap:8,fontSize:14
+              }}>
+                <span style={{
+                  display:"inline-block",width:10,height:10,borderRadius:999,
+                  background: formStatus==="good" ? "#10b981" : formStatus==="bad" ? "#ef4444" : "#9ca3af"
+                }} />
+                {formStatus==="good" ? "Good Form" : formStatus==="bad" ? "Adjust Form" : "Analyzing…"}
+              </div>
+
+              <div style={{
+                position:"absolute",top:12,left:12,background:"rgba(0,0,0,0.6)",
+                color:"#fff",padding:"8px 12px",borderRadius:999,fontSize:14
+              }}>
+                Reps: <b style={{fontSize:16}}>{repCount}</b>
+              </div>
+            </>
+          )}
         </div>
+
+        {/* Feedback */}
+        {isStreaming && feedback && (
+          <div style={{
+            marginTop:12,padding:12,borderRadius:8,
+            background: formStatus==="good" ? "#ecfdf5" : "#fef2f2",
+            color: formStatus==="good" ? "#065f46" : "#991b1b",
+            border: `1px solid ${formStatus==="good" ? "#a7f3d0" : "#fecaca"}`
+          }}>
+            {feedback}
+          </div>
+        )}
+
+        <canvas ref={canvasRef} style={{display:"none"}} />
       </div>
     </div>
   );
+}
+
+function btn(bg) {
+  return {
+    background:bg,color:"#fff",border:"none",padding:"8px 14px",
+    borderRadius:8,fontWeight:600,cursor:"pointer"
+  };
 }
