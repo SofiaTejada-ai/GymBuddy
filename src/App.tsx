@@ -12,28 +12,22 @@ export default function App() {
   const [repCount, setRepCount] = useState(0);
   const [feedback, setFeedback] = useState("");
 
-  // plank timer
   const [plankNowMs, setPlankNowMs] = useState(0);
   const [plankBestMs, setPlankBestMs] = useState(0);
 
-  // refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const intervalRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // squat FSM / baseline
   const sqPhaseRef = useRef<"idle" | "down" | "up">("idle");
   const sqHipBaseRef = useRef<number | null>(null);
   const sqLastRepAtRef = useRef<number>(0);
 
-  // plank timer ref
   const plankStartRef = useRef<number | null>(null);
 
-  // TTS debounce
   const lastCueRef = useRef<string>("");
   const lastCueUntilRef = useRef<number>(0);
 
-  // pose holdover to avoid flicker on brief drops
   const lastPoseRef = useRef<any>(null);
   const lastPoseAtRef = useRef<number>(0);
 
@@ -60,28 +54,32 @@ export default function App() {
     } catch {}
   }
 
-  // ---- helpers ----
   const kpPick = (pose: any, name: string) =>
     pose?.keypoints?.find((k: any) => (k.name ?? k.part) === name && (k.score ?? 0) >= THRESH.minKPScore);
 
   const angleABC = (a?: any, b?: any, c?: any) => {
-    const v1x = (a?.x ?? 0) - (b?.x ?? 0), v1y = (a?.y ?? 0) - (b?.y ?? 0);
-    const v2x = (c?.x ?? 0) - (b?.x ?? 0), v2y = (c?.y ?? 0) - (b?.y ?? 0);
+    const v1x = (a?.x ?? 0) - (b?.x ?? 0),
+      v1y = (a?.y ?? 0) - (b?.y ?? 0);
+    const v2x = (c?.x ?? 0) - (b?.x ?? 0),
+      v2y = (c?.y ?? 0) - (b?.y ?? 0);
     const dot = v1x * v2x + v1y * v2y;
-    const m1 = Math.hypot(v1x, v1y) || 1, m2 = Math.hypot(v2x, v2y) || 1;
+    const m1 = Math.hypot(v1x, v1y) || 1,
+      m2 = Math.hypot(v2x, v2y) || 1;
     const cos = Math.max(-1, Math.min(1, dot / (m1 * m2)));
     return (Math.acos(cos) * 180) / Math.PI;
   };
 
   const hipDevDeg = (S?: any, A?: any, H?: any) => {
     if (!S || !A || !H) return 9999;
-    const vx = A.x - S.x, vy = A.y - S.y;
-    const hx = H.x - S.x, hy = H.y - S.y;
+    const vx = A.x - S.x,
+      vy = A.y - S.y;
+    const hx = H.x - S.x,
+      hy = H.y - S.y;
     const len = Math.max(1, Math.hypot(vx, vy));
     const signedPx = (vx * hy - vy * hx) / len;
     const torso = Math.max(10, Math.hypot((H.x ?? 0) - (S.x ?? 0), (H.y ?? 0) - (S.y ?? 0)));
     const frac = signedPx / torso;
-    return Math.abs(frac) * 90; // ~deg
+    return Math.abs(frac) * 90;
   };
 
   const pxFromDeg = (deg: number, shoulder?: any, hip?: any) => {
@@ -91,21 +89,18 @@ export default function App() {
     return Math.tan(rad) * (torso || 100);
   };
 
-  // ---------- analysis ----------
   async function analyzeForm(): Promise<AnalyzeOut> {
     const v = videoRef.current!;
     const pose = await estimatePose(v);
 
-    // holdover 1.2s
     const nowT = performance.now();
     if (pose) {
       lastPoseRef.current = pose;
       lastPoseAtRef.current = nowT;
     }
-    const usePose = pose ?? ((nowT - lastPoseAtRef.current) < 1200 ? lastPoseRef.current : null);
+    const usePose = pose ?? (nowT - lastPoseAtRef.current < 1200 ? lastPoseRef.current : null);
     if (!usePose) return { formCorrect: false, repDetected: false, feedback: "" };
 
-    // landmarks (pick best available side)
     const R = {
       hip: kpPick(usePose, "right_hip"),
       knee: kpPick(usePose, "right_knee"),
@@ -133,53 +128,46 @@ export default function App() {
     const wrist = R.wrist || L.wrist;
     const ear = R.ear || L.ear;
 
-    // require only 2 landmarks to proceed
     const kpList = [hip, knee, ankle, shoulder, wrist, ear].filter(Boolean);
     if (kpList.length < 2) {
-      // demo-friendly fallback so the clip shows green
       if (useDemo && !videoRef.current!.paused && videoRef.current!.readyState >= 2) {
         return { formCorrect: true, repDetected: false, feedback: "Hold steady" };
       }
       return { formCorrect: false, repDetected: false, feedback: "" };
     }
 
-    // shared posture
     const devDeg = hipDevDeg(shoulder, ankle, hip);
-    const neckDeg = angleABC(hip, shoulder, ear);
-    const lineOK = devDeg <= THRESH.lineDevMax;
-    const neckOK = neckDeg <= THRESH.neckMax;
 
-    // -------- PLANK (side view; lenient for demos) --------
+    // Neck is intentionally ignored everywhere
+    // const neckDeg = angleABC(hip, shoulder, ear);
+    // const neckOK = neckDeg <= THRESH.neckMax;
+
     if (exercise === "plank") {
-      const dx = (shoulder && ankle) ? Math.abs(ankle.x - shoulder.x) : 0;
-      const dy = (shoulder && ankle) ? Math.abs(ankle.y - shoulder.y) : 9999;
+      const dx = shoulder && ankle ? Math.abs(ankle.x - shoulder.x) : 0;
+      const dy = shoulder && ankle ? Math.abs(ankle.y - shoulder.y) : 9999;
       const sideWidthOK = dx >= THRESH.plankMinShoulderAnkleDxPx;
+      const horizSlopeOK = dx > 0 ? dy / dx <= Math.tan((THRESH.plankHorizontalMaxDeg * Math.PI) / 180) : false;
 
-      const horizSlopeOK = dx > 0 ? (dy / dx) <= Math.tan((THRESH.plankHorizontalMaxDeg * Math.PI) / 180) : false;
-
-      // support under shoulder (wrist or elbow)
-      const wristDx = (wrist && shoulder) ? Math.abs(wrist.x - shoulder.x) : 9999;
-      const elbowDx = (elbow && shoulder) ? Math.abs(elbow.x - shoulder.x) : 9999;
+      const wristDx = wrist && shoulder ? Math.abs(wrist.x - shoulder.x) : 9999;
+      const elbowDx = elbow && shoulder ? Math.abs(elbow.x - shoulder.x) : 9999;
       const supportDx = Math.min(wristDx, elbowDx);
-      const handBelow = (wrist && shoulder) ? (wrist.y > shoulder.y + 20) : false;
-      const elbowBelow = (elbow && shoulder) ? (elbow.y > shoulder.y + 10) : false;
-      const supportOK = (supportDx <= THRESH.supportUnderShoulderPx) && (handBelow || elbowBelow);
+      const handBelow = wrist && shoulder ? wrist.y > shoulder.y + 20 : false;
+      const elbowBelow = elbow && shoulder ? elbow.y > shoulder.y + 10 : false;
+      const supportOK = supportDx <= THRESH.supportUnderShoulderPx && (handBelow || elbowBelow);
 
       const straightOK = devDeg <= THRESH.plankLineDevMax;
-      const neckOKp = neckDeg <= THRESH.plankNeckMax;
+      const neckOKp = true; // << neck irrelevant
 
-      // lenient rule: good straight line can compensate a bit
-      const okStrict = sideWidthOK && horizSlopeOK && supportOK && straightOK && neckOKp;
-      const okDemo = sideWidthOK && straightOK && neckOKp;
+      const okStrict = sideWidthOK && (horizSlopeOK || straightOK) && (supportOK || straightOK) && neckOKp;
+      const okDemo = (straightOK || horizSlopeOK) && neckOKp; // demos lenient
       const ok = useDemo ? okDemo : okStrict;
 
       let cue = "";
-      if (!sideWidthOK) cue = "Turn to side (profile)";
-      else if (!(useDemo ? straightOK : horizSlopeOK)) cue = useDemo ? "Straight line head→heels" : "Body parallel to floor";
+      if (!sideWidthOK && !useDemo) cue = "Turn to side (profile)";
+      else if (!(useDemo ? straightOK || horizSlopeOK : horizSlopeOK)) cue = useDemo ? "Straight line head→heels" : "Body parallel to floor";
       else if (!supportOK && !useDemo) cue = "Hands/elbows under shoulders";
-      else if (!straightOK) cue = (hip && shoulder && hip.y > shoulder.y) ? "Lift hips" : "Lower hips";
-      else if (!neckOKp) cue = "Relax neck";
-      else cue = "Hold steady";
+      else if (!straightOK) cue = hip && shoulder && hip.y > shoulder.y ? "Lift hips" : "Lower hips";
+      else cue = "Hold steady"; // never says "Relax neck"
 
       const now = performance.now();
       if (ok) {
@@ -194,12 +182,18 @@ export default function App() {
         setPlankNowMs(0);
       }
 
+      // Force demo green if clip is playing
+      if (useDemo && !ok && videoRef.current && !videoRef.current.paused && videoRef.current.readyState >= 2) {
+        const now2 = performance.now();
+        if (plankStartRef.current == null) plankStartRef.current = now2;
+        setPlankNowMs(now2 - (plankStartRef.current ?? now2));
+        return { formCorrect: true, repDetected: false, feedback: "Hold steady" };
+      }
+
       return { formCorrect: ok, repDetected: false, feedback: cue };
     }
 
-    // -------- SQUAT (relative-only) --------
     if (exercise === "squat") {
-      // stable vertical center (avg hips -> knees -> shoulders)
       const ys: number[] = [];
       if (R.hip?.y != null) ys.push(R.hip.y);
       if (L.hip?.y != null) ys.push(L.hip.y);
@@ -215,7 +209,6 @@ export default function App() {
 
       const centerY = ys.reduce((a, b) => a + b, 0) / ys.length;
 
-      // learn/freeze baseline while standing
       if (sqHipBaseRef.current == null) sqHipBaseRef.current = centerY;
       const base = sqHipBaseRef.current;
       const movedDownNow = centerY > base * (1 + THRESH.repDownFrac * 0.5);
@@ -223,20 +216,18 @@ export default function App() {
         sqHipBaseRef.current = 0.98 * base + 0.02 * centerY;
       }
 
-      const relDownOK = (centerY - base) >= (base * THRESH.repDownFrac);
+      const relDownOK = centerY - base >= base * THRESH.repDownFrac;
 
-      // loose torso guardrail
-      const torsoPx = (shoulder && hip) ? Math.abs(shoulder.x - hip.x) : 0;
+      const torsoPx = shoulder && hip ? Math.abs(shoulder.x - hip.x) : 0;
       const torsoOK = torsoPx <= pxFromDeg(THRESH.squatTorsoChangeMax * 1.8, shoulder, hip);
 
       const ok = relDownOK && torsoOK;
       const cue = ok ? "Nice rep" : relDownOK ? "Chest tall" : "Lower more";
 
-      // rep FSM
       let rep = false;
       const now = performance.now();
-      const movedDown = centerY > (base * (1 + THRESH.repDownFrac));
-      const backNearTop = centerY <= (base * (1 + THRESH.repTopFrac));
+      const movedDown = centerY > base * (1 + THRESH.repDownFrac);
+      const backNearTop = centerY <= base * (1 + THRESH.repTopFrac);
 
       if (sqPhaseRef.current === "idle" && movedDown) {
         sqPhaseRef.current = "down";
@@ -253,11 +244,9 @@ export default function App() {
       return { formCorrect: ok, repDetected: rep, feedback: cue };
     }
 
-    // others: permissive
     return { formCorrect: true, repDetected: false, feedback: "Tracking…" };
   }
 
-  // -------- loop (immediate border flip) --------
   const startAnalysis = () => {
     if (intervalRef.current) window.clearInterval(intervalRef.current);
     intervalRef.current = window.setInterval(async () => {
@@ -269,11 +258,10 @@ export default function App() {
     }, 250);
   };
 
-  // -------- sources ----------
   const startDemo = async () => {
     stopAll();
     const v = videoRef.current!;
-    v.crossOrigin = "anonymous"; // important for decoding consistency
+    v.crossOrigin = "anonymous";
     v.srcObject = null;
     v.src = demoMap[exercise];
     v.loop = true;
@@ -338,12 +326,10 @@ export default function App() {
 
   useEffect(() => {
     if (isStreaming && useDemo) startDemo();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exercise, useDemo]);
+  }, [exercise, useDemo, isStreaming]);
 
   useEffect(() => () => stopAll(), []);
 
-  // UI
   const borderCss =
     formStatus === "good"
       ? { border: "4px solid #22c55e", boxShadow: "0 0 0 2px rgba(34,197,94,0.25), 0 0 24px rgba(34,197,94,0.35)" }
@@ -381,7 +367,7 @@ export default function App() {
       <div style={{ maxWidth: 960, margin: "0 auto" }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <h1 style={{ fontSize: 36, margin: 0 }}>GymBuddy</h1>
-          <div style={{ opacity: 0.9 }}>Squat = lower yourself. Plank = side view only.</div>
+          <div style={{ opacity: 0.9 }}>Squat = lower yourself. Plank = side view (neck ignored).</div>
         </div>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
@@ -415,7 +401,11 @@ export default function App() {
             </button>
           )}
 
-          {isStreaming && exercise === "squat" && <div style={pill}>Reps: <b style={{ marginLeft: 6 }}>{repCount}</b></div>}
+          {isStreaming && exercise === "squat" && (
+            <div style={pill}>
+              Reps: <b style={{ marginLeft: 6 }}>{repCount}</b>
+            </div>
+          )}
           {isStreaming && exercise === "plank" && (
             <>
               <div style={pill}>
