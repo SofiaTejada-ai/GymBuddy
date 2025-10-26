@@ -1,0 +1,8 @@
+/* Tailwind (since you already have tailwind/postcss config) */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* App globals */
+html, body, #root { height: 100%; }
+body { margin: 0; background: #f8fafc; }

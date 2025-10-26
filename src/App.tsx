@@ -1,225 +1,95 @@
-import React, { useEffect, useRef, useState } from "react";
-import { estimatePoses } from "./ml/poseLoader";
-import { evaluateFrame } from "./ml/logic";
+import React, { useRef, useState, useEffect } from "react"
+import { Camera, StopCircle } from "lucide-react"
+import * as tf from "@tensorflow/tfjs"
+import * as poseDetection from "@tensorflow-models/pose-detection"
+import "@tensorflow/tfjs-backend-webgl"
 
-type Exercise = "squat" | "pushup" | "plank" | "deadbug" | "wallsit";
+export default function GymBuddy() {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [detector, setDetector] = useState<poseDetection.PoseDetector | null>(null)
+  const [running, setRunning] = useState(false)
+  const [feedback, setFeedback] = useState("Ready to start!")
+  const [formCorrect, setFormCorrect] = useState(true)
+  const [repCount, setRepCount] = useState(0)
 
-export default function App() {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  const lastCueRef = useRef("");
-  const lastSpokenRef = useRef(0);
-
-  const [exercise, setExercise] = useState<Exercise>("squat");
-  const [useDemo, setUseDemo] = useState(true);
-  const [count, setCount] = useState(0);
-  const [cue, setCue] = useState("");
-  const [calibUntil, setCalibUntil] = useState(0);
-
-  // calm border with hysteresis
-  const [okAvg, setOkAvg] = useState(1);
-  const [ok, setOk] = useState(false);
-  const okFlipUp = 0.65;
-  const okFlipDown = 0.35;
-
-  const [mute, setMute] = useState(false);
-
-  // load webcam or the right demo video
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-
-    const fit = () => {
-      const c = canvasRef.current;
-      if (!c) return;
-      c.width = v.videoWidth || 640;
-      c.height = v.videoHeight || 480;
-    };
-
-    if (useDemo) {
-      const demoMap: Record<Exercise, string> = {
-        squat: "/demo/squat_good_side.mp4",
-        pushup: "/demo/pushup_good_side.mp4",
-        plank: "/demo/plank_good_side.mp4",
-        deadbug: "/demo/deadbug_good_side.mp4",
-        wallsit: "/demo/wallsit_good_side.mp4",
-      };
-      v.srcObject = null;
-      v.src = demoMap[exercise];
-      v.loop = true;
-      v.muted = true;
-      v.onloadedmetadata = () => {
-        fit();
-        v.play().catch(() => {});
-      };
-      v.load();
-    } else {
-      navigator.mediaDevices
-        .getUserMedia({ video: true, audio: false })
-        .then((s) => {
-          v.src = "";
-          v.srcObject = s;
-          v.onloadedmetadata = () => {
-            fit();
-            v.play().catch(() => {});
-          };
-        })
-        .catch(console.error);
+    const loadDetector = async () => {
+      await tf.ready()
+      const det = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet
+      )
+      setDetector(det)
     }
+    loadDetector()
+  }, [])
 
-    v.onresize = fit;
-  }, [useDemo, exercise]);
+  const startCamera = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream
+      await videoRef.current.play()
+    }
+    setRunning(true)
+    loop()
+  }
 
-  // main loop (no per-frame speaking)
-  useEffect(() => {
-    let raf = 0;
-    const loop = async () => {
-      const v = videoRef.current;
-      if (v) {
-        const pose = await estimatePoses(v);
-        const { frame, event } = evaluateFrame(pose as any, exercise);
-        drawOverlay(pose, canvasRef.current, frame);
+  const stopCamera = () => {
+    const stream = videoRef.current?.srcObject as MediaStream
+    stream?.getTracks().forEach(track => track.stop())
+    setRunning(false)
+  }
 
-        // hysteresis on green/red
-        const goodNow = !(frame.cue && frame.cue.length > 0);
-        const next = 0.85 * okAvg + 0.15 * (goodNow ? 1 : 0);
-        setOkAvg(next);
-        setOk(ok ? next > okFlipDown : next > okFlipUp);
-
-        const newCue =
-          performance.now() > calibUntil ? frame.cue || "" : "Calibrating…";
-        if (newCue !== lastCueRef.current) lastCueRef.current = newCue;
-
-        if (event) setCount(event.index);
-
-        if (performance.now() > calibUntil) setCue(frame.cue || "");
-        else setCue("Calibrating…");
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [exercise, calibUntil, ok, okAvg]);
-
-  // speak every 4 seconds based on the latest cue (very light)
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const msg =
-        lastCueRef.current && lastCueRef.current !== "Calibrating…"
-          ? lastCueRef.current
-          : "Looking good";
-      const now = performance.now();
-      if (now - lastSpokenRef.current > 3500) {
-        speak(msg, mute);
-        lastSpokenRef.current = now;
-      }
-    }, 4000);
-    return () => clearInterval(timer);
-  }, [mute]);
+  const loop = async () => {
+    if (!detector || !running || !videoRef.current) return
+    const poses = await detector.estimatePoses(videoRef.current)
+    if (poses.length > 0) {
+      setFormCorrect(true)
+      setFeedback("Nice form! Keep going")
+    } else {
+      setFormCorrect(false)
+      setFeedback("Move into frame so I can detect your pose")
+    }
+    requestAnimationFrame(loop)
+  }
 
   return (
-    <div style={{ padding: 16 }}>
-      <div style={{ marginBottom: 8 }}>
-        <select
-          value={exercise}
-          onChange={(e) => {
-            const ex = e.target.value as Exercise;
-            setExercise(ex);
-            setCount(0);
-            setCue("Calibrating…");
-            setCalibUntil(performance.now() + 2000);
-            lastCueRef.current = "Calibrating…";
-            setOkAvg(1);
-          }}
-        >
-          <option value="squat">Squat</option>
-          <option value="pushup">Push-up</option>
-          <option value="plank">Plank</option>
-          <option value="deadbug">Dead bug</option>
-          <option value="wallsit">Wall sit</option>
-        </select>
-        <button onClick={() => setUseDemo((s) => !s)} style={{ marginLeft: 8 }}>
-          {useDemo ? "Use webcam" : "Use demo video"}
-        </button>
-        <button onClick={() => setMute((m) => !m)} style={{ marginLeft: 8 }}>
-          {mute ? "Voice off" : "Voice on"}
-        </button>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 text-white">
+      <h1 className="text-3xl font-bold mb-6">GymBuddy</h1>
+
+      <video
+        ref={videoRef}
+        className="w-80 h-60 bg-black rounded-lg mb-4"
+        style={{ transform: "scaleX(-1)" }}
+      />
+
+      <div className="flex gap-4">
+        {!running ? (
+          <button
+            onClick={startCamera}
+            className="flex items-center gap-2 bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg"
+          >
+            <Camera /> Start
+          </button>
+        ) : (
+          <button
+            onClick={stopCamera}
+            className="flex items-center gap-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg"
+          >
+            <StopCircle /> Stop
+          </button>
+        )}
       </div>
 
       <div
-        style={{
-          position: "relative",
-          width: 640,
-          height: 480,
-          border: `4px solid ${ok ? "green" : "red"}`,
-        }}
+        className={`mt-6 p-4 rounded-lg ${
+          formCorrect ? "bg-green-700" : "bg-red-700"
+        }`}
       >
-        <video
-          ref={videoRef}
-          width={640}
-          height={480}
-          style={{ position: "absolute", left: 0, top: 0 }}
-          playsInline
-        />
-        <canvas
-          ref={canvasRef}
-          width={640}
-          height={480}
-          style={{ position: "absolute", left: 0, top: 0 }}
-        />
+        {feedback}
       </div>
 
-      <div style={{ marginTop: 12, fontSize: 20 }}>
-        Count: <b>{count}</b> | Tip: {cue || "Follow the on-screen guidance"}
-      </div>
+      <div className="mt-2 text-lg">Reps: {repCount}</div>
     </div>
-  );
+  )
 }
 
-function speak(text: string, mute: boolean) {
-  if (mute || !text) return;
-  try {
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.05;
-    window.speechSynthesis.speak(u);
-  } catch {}
-}
-
-function drawOverlay(pose: any, canvas: HTMLCanvasElement | null, frame: any) {
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  if (pose?.keypoints) {
-    ctx.lineWidth = 2;
-    (pose.keypoints || []).forEach((k: any) => {
-      if ((k.score ?? 0) > 0.3) {
-        ctx.beginPath();
-        ctx.arc(k.x, k.y, 3, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    });
-  } else {
-    ctx.font = "14px sans-serif";
-    ctx.fillStyle = "black";
-    ctx.fillText("no pose yet…", 8, 18);
-  }
-
-  const a = frame?.angles || {};
-  const s = frame?.signals || {};
-  const lines = [
-    `knee: ${a.knee?.toFixed?.(1) ?? "-"}`,
-    `elbow: ${a.elbow?.toFixed?.(1) ?? "-"}`,
-    `torso: ${a.torso?.toFixed?.(1) ?? "-"}`,
-    `lineDev: ${s.lineDeviation?.toFixed?.(1) ?? "-"}`,
-    `hipHeight: ${s.hipHeight?.toFixed?.(1) ?? "-"}`,
-    `backContact: ${s.backContact?.toFixed?.(1) ?? "-"}`,
-  ];
-  ctx.font = "14px sans-serif";
-  ctx.fillStyle = "black";
-  lines.forEach((txt, i) => ctx.fillText(txt, 8, 18 + i * 16));
-}
