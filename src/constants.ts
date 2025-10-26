@@ -1,35 +1,30 @@
 export const THRESH = {
-  // ---------- Generic timing ----------
-  holdSecondGreenFrac: 0.60,
+  // camera tolerance
+  minKPScore: 0.2,
 
-  // ---------- Posture windows ----------
-  lineDevMax: 14,   // (deg) hip deviation from shoulder→ankle line
-  neckMax: 28,      // (deg) neck flexion
+  // UI
+  cueHoldMs: 600,
 
-  // ---------- Squat (DO NOT CHANGE per your request) ----------
-  repDownFrac: 0.06,
-  repTopFrac: 0.03,
-  squatDepthMin: 150,
-  squatDepthMax: 175,
-  squatTorsoChangeMax: 30, // (deg proxy) "chest tall"
-  kneeCaveFrac: 0.25,
+  // --- SQUAT (relative-only) ---
+  repDownFrac: 0.06,   // ≥6% drop from your standing baseline = “in squat”
+  repTopFrac: 0.06,    // within 6% of baseline = “at top”
+  minRepMs: 500,       // debounce reps
+  squatTorsoChangeMax: 50,
 
-  // ---------- Push-up ----------
-  pushupDepthElbowMax: 110,
+  // --- Global posture hints (kept simple)
+  lineDevMax: 18,
+  neckMax: 30,
 
-  // ---------- Dead bug ----------
-  deadbugBackContactMaxPx: 55,
-  deadbugLimbSpeedMaxPx: 14,
+  // --- PLANK (side-view gating) ---
+  plankLineDevMax: 24,               // hips aligned shoulder→ankle
+  plankNeckMax: 40,
+  plankHorizontalMaxDeg: 35,         // body should be ~horizontal (|dy/dx| <= tan(25°))
+  plankMinShoulderAnkleDxPx: 80,    // ensure side view (wide enough horizontally)
+  supportUnderShoulderPx: 130,        // wrist/elbow roughly under shoulder (x distance)
 
-  // ---------- Wall sit ----------
-  wallsitShinTiltMax: 14,
-  wallsitBackTiltMax: 14,
-
-  // ---------- Misc ----------
-  minKPScore: 0.25,
-  cueHoldMs: 800,
-
-  // NEW: status latch to stabilize border color
-  goodFramesToGreen: 2,   // need 4 consecutive OK frames to turn green
-  badFramesToRed: 6       // need 4 consecutive NOT-OK frames to turn red
+  // --- wallsit / deadbug (permissive)
+  wallsitShinTiltMax: 22,
+  wallsitBackTiltMax: 22,
+  deadbugBackContactMaxPx: 80,
+  deadbugLimbSpeedMaxPx: 60,
 } as const;
