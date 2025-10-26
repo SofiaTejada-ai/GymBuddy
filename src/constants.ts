@@ -16,11 +16,11 @@ export const THRESH = {
   neckMax: 30,
 
   // --- PLANK (side-view gating) ---
-  plankLineDevMax: 24,               // hips aligned shoulder→ankle
-  plankNeckMax: 40,
-  plankHorizontalMaxDeg: 35,         // body should be ~horizontal (|dy/dx| <= tan(25°))
-  plankMinShoulderAnkleDxPx: 80,    // ensure side view (wide enough horizontally)
-  supportUnderShoulderPx: 130,        // wrist/elbow roughly under shoulder (x distance)
+   plankLineDevMax: 28,
+  plankNeckMax: 45,
+  plankHorizontalMaxDeg: 40,
+  plankMinShoulderAnkleDxPx: 60,
+  supportUnderShoulderPx: 150,       // wrist/elbow roughly under shoulder (x distance)
 
   // --- wallsit / deadbug (permissive)
   wallsitShinTiltMax: 22,
